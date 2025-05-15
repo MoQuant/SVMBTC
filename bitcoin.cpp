@@ -19,6 +19,7 @@ using namespace boost::property_tree;
 using namespace web;
 using namespace web::websockets::client;
 
+// Parses a PyObject result into a 1D vector
 std::vector<double> ParsePy(PyObject* pObject) {
     std::vector<double> result;
 
@@ -49,6 +50,7 @@ std::vector<double> ParsePy(PyObject* pObject) {
     return result;
 }
 
+// Parses a result PyObject into a 2D vector
 std::vector<std::vector<double>> ParsePy2(PyObject* pObject) {
     std::vector<std::vector<double>> result;
 
@@ -99,6 +101,7 @@ std::vector<std::vector<double>> ParsePy2(PyObject* pObject) {
     return result;
 }
 
+// Converts a 2D vector into a PyObject
 PyObject* list2D(const std::vector<std::vector<double>>& cppData) {
     PyObject* pyList = PyList_New(cppData.size());
 
@@ -116,6 +119,7 @@ PyObject* list2D(const std::vector<std::vector<double>>& cppData) {
     return pyList;
 }
 
+// Converts a 1D vector into a PyObject
 PyObject* list1D(const std::vector<double>& cppData) {
     PyObject* pyList = PyList_New(cppData.size());
 
@@ -127,6 +131,7 @@ PyObject* list1D(const std::vector<double>& cppData) {
     return pyList;
 }
 
+// Parses price data into an inputted vector to add the latest price
 void Cyclone(ptree dataset, std::vector<double> & price_data)
 {
     ptree::const_iterator end = dataset.end();
@@ -143,6 +148,7 @@ void Cyclone(ptree dataset, std::vector<double> & price_data)
     }
 }
 
+// Converts a string into a JSON object using Boost
 ptree JSON(std::string message){
     std::stringstream ss(message);
     ptree data;
@@ -150,10 +156,14 @@ ptree JSON(std::string message){
     return data;
 }
 
+// Websocket Client takes the input of the price_data vector and the limit to how big the vector gets
 void Socket(std::vector<double> & price_data, int limit){
+
+    // Define url and message to send to Coinbase server to stream ticker data
     std::string url = "wss://ws-feed.exchange.coinbase.com";
     std::string msg = "{\"type\":\"subscribe\", \"product_ids\":[\"BTC-USD\"], \"channels\":[\"ticker\"]}";
 
+    // Declare the websocket client and pass the message
     websocket_client client;
     client.connect(url).wait();
 
@@ -165,6 +175,7 @@ void Socket(std::vector<double> & price_data, int limit){
         client.receive().then([](websocket_incoming_message in_msg){
             return in_msg.extract_string();
         }).then([&](std::string message){
+            // Parse the price data and delete first element of vector once limit is reached
             Cyclone(JSON(message), std::ref(price_data));
             if(price_data.size() > limit){
                 price_data.erase(price_data.begin());
@@ -175,8 +186,10 @@ void Socket(std::vector<double> & price_data, int limit){
     client.close().wait();
 }
 
+// Builds a dataframe off price data
 void DataFrame(std::vector<double> prices, std::vector<std::vector<double>> & X, std::vector<double> & Y)
 {
+    // Computes the mean and standard deviation given a vector of price data
     auto stats = [](std::vector<double> windows)
     {
         double mean = 0, stdev = 0;
@@ -192,6 +205,7 @@ void DataFrame(std::vector<double> prices, std::vector<std::vector<double>> & X,
         return result;
     };
 
+    // Calculates the cumulative rate of return of return off a given vector 
     auto ror = [](std::vector<double> windows)
     {
         double result = 1;
@@ -205,17 +219,22 @@ void DataFrame(std::vector<double> prices, std::vector<std::vector<double>> & X,
     int output = 5;
 
     std::vector<double> Window, Stats, Temp, OWindow;
-    
+
+    // Computes the input and output vector for the Support Vector Machine
     for(int i = window; i < prices.size() - output; ++i){
         Temp.clear();
         Window = {prices.begin() + (i - window), prices.begin() + i};
         OWindow = {prices.begin() + i, prices.begin() + i + output};
         Stats = stats(Window);
+
+        // Compute the technical indicators
         Temp.push_back(prices[i]);
         Temp.push_back(Stats[0]);
         Temp.push_back(prices[i] - 2.0*Stats[1]);
         Temp.push_back(prices[i] + 2.0*Stats[1]);
         X.push_back(Temp);
+        
+        // Classification labels for Support Vector Machine
         if(ror(OWindow) > 0){
             Y.push_back(0.0);
         } else {
@@ -223,6 +242,7 @@ void DataFrame(std::vector<double> prices, std::vector<std::vector<double>> & X,
         }
     }
 
+    // Adds the last row of data to be predicted by the SVM
     Window = {prices.end() - output, prices.end()};
     Stats = stats(Window);
     Temp.clear();
@@ -234,8 +254,10 @@ void DataFrame(std::vector<double> prices, std::vector<std::vector<double>> & X,
 
 }
 
+// Normalizes the technical analysis dataframe 2D vector
 void Normalize(std::vector<std::vector<double>> Inputs, std::vector<std::vector<double>> & NInputs)
 {
+    // Computes the mean and standard deviation of a given vector
     auto stats = [](std::vector<double> windows)
     {
         double mean = 0, stdev = 0;
@@ -251,6 +273,7 @@ void Normalize(std::vector<std::vector<double>> Inputs, std::vector<std::vector<
         return result;
     };
 
+    // Transposes the 2D vector
     auto transpose = [](std::vector<std::vector<double>> z)
     {
         std::vector<std::vector<double>> L;
@@ -265,6 +288,7 @@ void Normalize(std::vector<std::vector<double>> Inputs, std::vector<std::vector<
         return L;
     };
 
+    // Normalizes the dataframe with the ZScore method
     Inputs = transpose(Inputs);
     for(int i = 0; i < Inputs.size(); ++i){
         std::vector<double> Stats = stats(Inputs[i]);
@@ -272,11 +296,13 @@ void Normalize(std::vector<std::vector<double>> Inputs, std::vector<std::vector<
             Inputs[i][j] = (Inputs[i][j] - Stats[0])/Stats[1];
         }
     }
+    // Setting the normalized data equal to the transpose of the inputs
     NInputs = transpose(Inputs);
 }
 
 int main()
 {
+    // Initialize Python Header
     Py_Initialize();
 
     std::vector<double> pred_results;
@@ -286,19 +312,24 @@ int main()
     int limit = 300;
     int start_limit = 60;
 
+    // Create a thread to stream Bitcoin's price data
     std::thread datafeed(Socket, std::ref(prices), limit);    
 
+    // Import the Support Vector Machine from Scikit-Learn using PyObjects
     PyObject * svm = PyImport_Import(PyUnicode_FromString("sklearn.svm"));
     PyObject * SVC = PyObject_GetAttrString(svm, "SVC");
 
     PyObject * EARG = PyTuple_New(0);
 
+    // Set the kernel to radial basis function in case data is non linear and also extract the probabilities
     PyObject * init_params = PyDict_New();
     PyDict_SetItemString(init_params, "kernel", PyUnicode_FromString("rbf"));
     PyDict_SetItemString(init_params, "probability", Py_True);
 
+    // Declare the model
     PyObject * model = PyObject_Call(SVC, EARG, init_params);
 
+    // Import model parameters
     PyObject * fit = PyObject_GetAttrString(model, "fit");
     PyObject * predict = PyObject_GetAttrString(model, "predict");
     PyObject * predict_prob = PyObject_GetAttrString(model, "predict_proba");
@@ -308,12 +339,16 @@ int main()
     
     while(true){
         if(prices.size() >= start_limit){
+            // Makes sure old data is not included
             Inputs.clear();
             outputs.clear();
             NInputs.clear();
+
+            // Compute the dataframe and normalize the data
             DataFrame(prices, std::ref(Inputs), std::ref(outputs));
             Normalize(Inputs, std::ref(NInputs));
 
+            // Split data into training and testing with the last element of the input vector being the predictor
             Train = {NInputs.begin(), NInputs.end() - 1};
             Test = {NInputs.end() - 1, NInputs.end()};
 
@@ -324,11 +359,12 @@ int main()
 
             PyTuple_SetItem(pred_args, 0, list2D(Test));
 
+            // Generate the predictions and probabilities and parse them back into C++ vectors
             PyObject * pred_result = PyObject_CallObject(predict, pred_args);
             PyObject * prob_result = PyObject_CallObject(predict_prob, pred_args);
             Py_ssize_t size1 = PySequence_Size(pred_result);
             Py_ssize_t size2 = PySequence_Size(prob_result);
-
+    
             std::vector<double> OUTPUT;
             for(Py_ssize_t i = 0; i < size1; ++i){
                 OUTPUT.push_back(PyFloat_AsDouble(PySequence_GetItem(pred_result, i)));  
@@ -340,6 +376,7 @@ int main()
                 }
             }
 
+            // Classification of going long or short with the given probability
             if(OUTPUT[0] == 0){
                 std::cout << "The chance of a Long working is " << OUTPUT[1] << std::endl;
             } else {
@@ -354,7 +391,7 @@ int main()
         }
     }
 
-
+    // End of the Python Header
     Py_Finalize();
 
     return 0;
